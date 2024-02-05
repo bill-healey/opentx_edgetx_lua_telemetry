@@ -28,7 +28,7 @@ local rssi_graph = {}
 local min_seen_rssi, min_seen_batt, max_seen_batt
 local SETTINGS_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/telem_settings_%s.txt"
 local switches = {'sa','sb','sc','sd','se','sf','s1','s2','s3','s4','ls','rs','ls1','ls2','ls3','ls4','ls5','ls6','ls7','ls8','ls9','l10'}
-local telemetries = {'telem1','telem2','telem3','telem4','telem5','telem6','telem7','telem8','telem9','telem10','telem11','telem12'}
+local telemetries = {'RSSI', 'A1', 'A2', 'TPWR', 'TRSS', 'TQly', '1RSS', 'RxBt', 'Bat_', 'telem1','telem2','telem3','telem4','telem5','telem6','telem7','telem8','telem9','telem10','telem11','telem12','telem13','telem14','telem15','telem16','telem17','telem18','telem19','telem20','telem21','telem22','telem23','telem24','telem25','telem26','telem27','telem28','telem29','telem30'}
 local settings = {
   rssi_source="RSSI",
   rssi_min=20,
@@ -46,6 +46,7 @@ local settings = {
   beeper_min=-10,
   beeper_max=10,
 }
+local sorted_settings={}
 local settings_count=nil
 local settings_screen = false
 local selected = false
@@ -160,6 +161,7 @@ end
 local function drawRSSI()
   local rssi = getValue(settings.rssi_source)
   record_datapoint(rssi_graph, rssi)
+
   local clamped_rssi = clamp(rssi, settings.rssi_min, settings.rssi_max)
   local total_steps = 30
   local range = settings.rssi_max - settings.rssi_min
@@ -277,9 +279,27 @@ local function loadSettingsFromFile()
       end
     end
     settings_count=0
+    sorted_settings = {}
     for k, v in pairs(settings) do
       settings_count=settings_count+1
+
+      -- table.sort is unavailable so reimplmenet a sort
+      local inserted = false
+      for i = 1, settings_count - 1 do
+          if k < sorted_settings[i] then
+              for j = settings_count, i + 1, -1 do
+                  sorted_settings[j] = sorted_settings[j - 1]
+              end
+              sorted_settings[i] = k
+              inserted = true
+              break
+          end
+      end
+      if not inserted then
+          sorted_settings[settings_count] = k
+      end
     end
+    print("Sorted settings" .. sorted_settings[1])
 end
 
 local function drawSettings(x, y, event)
@@ -306,7 +326,8 @@ local function drawSettings(x, y, event)
   end
   scroll_offset = clamp(scroll_offset, settings_cursor-8, settings_cursor)
   --local scroll_offset = math.max(settings_cursor-8,0)
-  for k, v in pairs(settings) do
+  for _, k in pairs(sorted_settings) do
+    v=settings[k]
     if i>=scroll_offset and i<scroll_offset+9 then
       if i==settings_cursor and selected then
         lcd.drawText(x, y + (i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
