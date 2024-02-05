@@ -25,12 +25,24 @@ local cell_height = round(grid_height / 3)
 
 local batt_graph = {}
 local rssi_graph = {}
-
 local min_seen_rssi, min_seen_batt, max_seen_batt
-local max_rssi = 99
-local min_rssi = 20
-local max_batt = 4.2
-local min_batt = 3.1
+local SETTINGS_FILE = "/SCRIPTS/TELEMETRY/telem_settings.txt"
+local settings = {
+	rssi_source="RSSI",
+	rssi_min=20,
+	rssi_max=99,
+	rssi_graph_update_every_n_ticks=5,
+	batt_source="BATT",
+	batt_min=2.9,
+	batt_max=4.35,
+	batt_graph_update_every_n_ticks=5
+}
+--  local armed = getValue("sc")  -- arm
+--  local turtmode = getValue("ls4") -- turt
+ -- local race = getValue("ls7") -- race mode
+--  local beepr_val = getValue('sa') -- beeper
+--  local beepr = not (-10 < beepr_val and beepr_val < 10)
+--  local failsafe = -100
 
 
 function init_graph(graph, min, max, width, height, interval)
@@ -85,18 +97,18 @@ local function drawGrid(lines, cols)
 end
 
 local function drawBatt()
-  local batt = getValue("A1")
+  local batt = getValue(settings.batt_source)
   record_datapoint(batt_graph, batt)
-  if batt and batt>2.3 then
+  if batt and batt>2.5 then
     max_seen_batt = math.max(round(batt, 2), max_seen_batt or 0)
     min_seen_batt = math.min(round(batt, 2), min_seen_batt or 99)
   end
     
   -- Calculate the size of the level
   local total_steps = 30 
-  local range = max_batt - min_batt
+  local range = settings.batt_max - settings.batt_min
   local step_size = range/total_steps
-  local current_level = math.floor(total_steps - ((batt - min_batt) / step_size))
+  local current_level = math.floor(total_steps - ((batt - settings.batt_min) / step_size))
   if current_level>30 then
     current_level=30
   end
@@ -138,13 +150,13 @@ local function drawChannels(x, y)
 end
 
 local function drawRSSI()
-  local rssi = getValue("RSSI")
+  local rssi = getValue(settings.rssi_source)
   record_datapoint(rssi_graph, rssi)
-  local clamped_rssi = clamp(rssi, min_rssi, max_rssi)
+  local clamped_rssi = clamp(rssi, settings.rssi_min, settings.rssi_max)
   local total_steps = 30
-  local range = max_rssi - min_rssi
+  local range = settings.rssi_max - settings.rssi_min
   local step_size = range/total_steps
-  local current_level = math.floor(total_steps-((clamped_rssi - min_rssi) / step_size))
+  local current_level = math.floor(total_steps-((clamped_rssi - settings.rssi_min) / step_size))
 
   lcd.drawFilledRectangle(111, 4, 14, 32, SOLID)
   lcd.drawFilledRectangle(112, 5, 12, current_level, ERASE)
@@ -219,9 +231,76 @@ local function drawTime(x, y)
   --timer = model.getTimer(1)
 end
 
+local settings_screen = false
+local selected = false
+local settings_cursor=0
+
+local function drawSettings(x, y, event)
+	local i=0
+	if event == EVT_ENTER_FIRST then
+		selected = not selected
+	end
+	if (event == EVT_UP_FIRST or event == EVT_UP_REPT) and settings_cursor>0 and not selected then
+		settings_cursor = settings_cursor - 1
+	end
+	if (event == EVT_DOWN_FIRST or event == EVT_DOWN_REPT) and settings_cursor<#settings then
+		settings_cursor = settings_cursor + 1
+	end
+  for k, v in pairs(settings) do
+		if i==settings_cursor and selected then
+			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
+		elseif i==settings_cursor then
+			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE+INVERS)
+		else
+			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE)
+		end
+		i=i+1
+  end
+	--popupInput(string.format("Enter new value for %s"
+end
+
+local function saveSettingsToFile()
+	local file = io.open(SETTINGS_FILE, "w")
+	if file then
+			local serialized = ""
+			for k, v in pairs(settings) do
+					serialized = serialized .. k .. "=" .. tostring(v) .. "\n"
+			end
+			io.write(file, serialized)
+			io.close(file)
+	else
+			error("Cannot open file for writing")
+	end
+end
+
+local function loadSettingsFromFile()
+    local file = io.open(SETTINGS_FILE, "r")
+    if not file then 
+        error("Cannot open file for reading")
+    end
+		local content = io.read(file, 1024)
+		io.close(file)
+    for line in string.gmatch(content, '([^\n]+)') do
+        local key, value = string.match(line, "(%w+)=(.+)")
+        settings[key] = tonumber(value) or value
+    end
+end
+
+
 -- Main Event Loop
 local function run(event)
   lcd.clear()
+	if event == EVT_UP_LONG then
+		settings_screen = not settings_screen
+		if settings_screen == false then
+			saveSettingsToFile()
+		end
+	end
+
+	if settings_screen then
+		drawSettings(1, 1, event)
+		return
+	end
 
   -- Top Left
   x,y=grid_limit_left + 1, min_y - 2
@@ -254,8 +333,9 @@ local function run(event)
 end
 
 local function init_func()
-  init_graph(batt_graph, min_batt, max_batt, grid_width/2, cell_height-1, 5)
-  init_graph(rssi_graph, min_rssi, max_rssi, grid_width/2, cell_height-1, 5)
+	loadSettingsFromFile()
+  init_graph(batt_graph, settings.batt_min, settings.batt_max, grid_width/2, cell_height-1, 5)
+  init_graph(rssi_graph, settings.rssi_min, settings.rssi_max, grid_width/2, cell_height-1, 5)
 end
 
 return{run=run, init=init_func}
