@@ -26,23 +26,31 @@ local cell_height = round(grid_height / 3)
 local batt_graph = {}
 local rssi_graph = {}
 local min_seen_rssi, min_seen_batt, max_seen_batt
-local SETTINGS_FILE = "/SCRIPTS/TELEMETRY/telem_settings.txt"
+local SETTINGS_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/telem_settings_%s.txt"
+local switches = {'sa','sb','sc','sd','se','sf','s1','s2','s3','s4','ls','rs','ls1','ls2','ls3','ls4','ls5','ls6','ls7','ls8','ls9','l10'}
+local telemetries = {'telem1','telem2','telem3','telem4','telem5','telem6','telem7','telem8','telem9','telem10','telem11','telem12'}
 local settings = {
-	rssi_source="RSSI",
-	rssi_min=20,
-	rssi_max=99,
-	rssi_graph_update_every_n_ticks=5,
-	batt_source="BATT",
-	batt_min=2.9,
-	batt_max=4.35,
-	batt_graph_update_every_n_ticks=5
+  rssi_source="RSSI",
+  rssi_min=20,
+  rssi_max=99,
+  rssi_graph_update_tick=5,
+  batt_source="A1",
+  batt_min=2.9,
+  batt_max=4.35,
+  batt_graph_update_tick=5,
+  armed_sw="sc",
+  flightmode_sw="sb",
+  turtmode_sw="ls4",
+  racemode_sw="ls7",
+  beeper_sw="sa",
+  beeper_min=-10,
+  beeper_max=10,
 }
---  local armed = getValue("sc")  -- arm
---  local turtmode = getValue("ls4") -- turt
- -- local race = getValue("ls7") -- race mode
---  local beepr_val = getValue('sa') -- beeper
---  local beepr = not (-10 < beepr_val and beepr_val < 10)
---  local failsafe = -100
+local settings_count=nil
+local settings_screen = false
+local selected = false
+local settings_cursor=0
+local scroll_offset=0
 
 
 function init_graph(graph, min, max, width, height, interval)
@@ -172,7 +180,7 @@ end
 
 local function drawFlightMode(x, y)
   local f_mode = "UNKN"
-  local fm = getValue("sb")
+  local fm = getValue(settings.flightmode_sw)
   if fm < -1000 then
     f_mode = "ANGL"
   elseif (-10 < fm and fm < 10) then
@@ -184,11 +192,11 @@ local function drawFlightMode(x, y)
 end
 
 local function drawSwitchStatus(x, y)
-  local armed = getValue("sc")  -- arm
-  local turtmode = getValue("ls4") -- turt
-  local race = getValue("ls7") -- race mode
-  local beepr_val = getValue('sa') -- beeper
-  local beepr = not (-10 < beepr_val and beepr_val < 10)
+  local armed = getValue(settings.armed_sw)  -- arm
+  local turtmode = getValue(settings.turtmode_sw) -- turt
+  local race = getValue(settings.racemode_sw) -- race mode
+  local beepr_val = getValue(settings.beeper_sw) -- beeper
+  local beepr = not (settings.beeper_min < beepr_val and beepr_val < settings.beeper_max)
   local failsafe = -100
 
   if (armed < 10 and failsafe < 0) then
@@ -231,76 +239,112 @@ local function drawTime(x, y)
   --timer = model.getTimer(1)
 end
 
-local settings_screen = false
-local selected = false
-local settings_cursor=0
-
-local function drawSettings(x, y, event)
-	local i=0
-	if event == EVT_ENTER_FIRST then
-		selected = not selected
-	end
-	if (event == EVT_UP_FIRST or event == EVT_UP_REPT) and settings_cursor>0 and not selected then
-		settings_cursor = settings_cursor - 1
-	end
-	if (event == EVT_DOWN_FIRST or event == EVT_DOWN_REPT) and settings_cursor<#settings then
-		settings_cursor = settings_cursor + 1
-	end
-  for k, v in pairs(settings) do
-		if i==settings_cursor and selected then
-			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
-		elseif i==settings_cursor then
-			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE+INVERS)
-		else
-			lcd.drawText(x, y+i*7, string.format("%s: %s", k, v), SMLSIZE)
-		end
-		i=i+1
+local function getArrIndex(arr, val)
+  for i,v in ipairs(arr) do
+    if v==val then return i end
   end
-	--popupInput(string.format("Enter new value for %s"
+  return 0
 end
 
 local function saveSettingsToFile()
-	local file = io.open(SETTINGS_FILE, "w")
-	if file then
-			local serialized = ""
-			for k, v in pairs(settings) do
-					serialized = serialized .. k .. "=" .. tostring(v) .. "\n"
-			end
-			io.write(file, serialized)
-			io.close(file)
-	else
-			error("Cannot open file for writing")
-	end
+  local file = io.open(string.format(SETTINGS_FILE_TEMPLATE, model.getInfo().name), "w")
+  if file then
+      local serialized = ""
+      for k, v in pairs(settings) do
+          serialized = serialized .. k .. "=" .. tostring(v) .. "\n"
+      end
+      io.write(file, serialized)
+      io.close(file)
+  else
+      print("Cannot open file for writing")
+  end
 end
 
 local function loadSettingsFromFile()
-    local file = io.open(SETTINGS_FILE, "r")
+    local file = io.open(string.format(SETTINGS_FILE_TEMPLATE, model.getInfo().name), "r")
     if not file then 
-        error("Cannot open file for reading")
+      print("Could not open model-specific settings, trying defaults")
+      file = io.open(string.format(SETTINGS_FILE_TEMPLATE, model.getInfo().name), "r")
     end
-		local content = io.read(file, 1024)
-		io.close(file)
-    for line in string.gmatch(content, '([^\n]+)') do
-        local key, value = string.match(line, "(%w+)=(.+)")
+    if not file then
+      print("Could not open default settings")
+    else
+      local content = io.read(file, 1024)
+      io.close(file)
+      for line in string.gmatch(content, '([^\n]+)') do
+        local key, value = string.match(line, "([%w_]+)=(.+)")
         settings[key] = tonumber(value) or value
+      end
     end
+    settings_count=0
+    for k, v in pairs(settings) do
+      settings_count=settings_count+1
+    end
+end
+
+local function drawSettings(x, y, event)
+  local i=0
+  local up = (event == EVT_UP_FIRST or event == EVT_UP_REPT)
+  local down = (event == EVT_DOWN_FIRST or event == EVT_DOWN_REPT)
+  if event == EVT_EXIT_BREAK then
+    if selected then
+      selected = false
+    else
+      settings_screen=false
+      saveSettingsToFile()
+      return
+    end
+  end
+  if event == EVT_ENTER_BREAK then
+    selected = not selected
+  end
+  if up and settings_cursor>0 and not selected then
+    settings_cursor = settings_cursor - 1
+  end
+  if down and settings_cursor<settings_count-1 and not selected then
+    settings_cursor = settings_cursor + 1
+  end
+  scroll_offset = clamp(scroll_offset, settings_cursor-8, settings_cursor)
+  --local scroll_offset = math.max(settings_cursor-8,0)
+  for k, v in pairs(settings) do
+    if i>=scroll_offset and i<scroll_offset+9 then
+      if i==settings_cursor and selected then
+        lcd.drawText(x, y + (i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
+        if type(v)=="number" and string.match(k, "batt_m")  then
+          settings[k]=up and settings[k] + .05 or settings[k]
+          settings[k]=down and settings[k] - .05 or settings[k]
+        elseif type(v)=="number" then
+          settings[k]=up and settings[k] + 1 or settings[k]
+          settings[k]=down and settings[k] - 1 or settings[k]
+        elseif type(v)=="string" and string.match(k, "_sw") then
+          settings[k]=up and switches[(getArrIndex(switches, settings[k]) + 1) % #switches] or settings[k]
+          settings[k]=down and switches[(getArrIndex(switches, settings[k]) - 1) % #switches] or settings[k]
+        elseif type(v)=="string" then
+          settings[k]=up and telemetries[(getArrIndex(telemetries, settings[k]) + 1) % #telemetries] or settings[k]
+          settings[k]=down and telemetries[(getArrIndex(telemetries, settings[k]) - 1) % #telemetries] or settings[k]
+        end
+      elseif i==settings_cursor then
+        lcd.drawText(x, y+(i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+INVERS)
+      else
+        lcd.drawText(x, y+(i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE)
+      end
+    end
+    i=i+1
+  end
 end
 
 
 -- Main Event Loop
 local function run(event)
   lcd.clear()
-	if event == EVT_UP_LONG then
-		settings_screen = not settings_screen
-		if settings_screen == false then
-			saveSettingsToFile()
-		end
-	end
+  if event == EVT_UP_LONG and not settings_screen then
+    settings_screen = true
+  end
 
-	if settings_screen then
-		drawSettings(1, 1, event)
-		return
-	end
+  if settings_screen then
+    drawSettings(1, 1, event)
+    return
+  end
 
   -- Top Left
   x,y=grid_limit_left + 1, min_y - 2
@@ -333,7 +377,7 @@ local function run(event)
 end
 
 local function init_func()
-	loadSettingsFromFile()
+  loadSettingsFromFile()
   init_graph(batt_graph, settings.batt_min, settings.batt_max, grid_width/2, cell_height-1, 5)
   init_graph(rssi_graph, settings.rssi_min, settings.rssi_max, grid_width/2, cell_height-1, 5)
 end
