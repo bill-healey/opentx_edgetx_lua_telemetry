@@ -162,6 +162,8 @@ end
 
 local function drawRSSI()
   local rssi = getValue(settings.rssi_source)
+  if rssi==nil or type(rssi)~="number" then rssi=0 end 
+
   record_datapoint(rssi_graph, rssi)
 
   local clamped_rssi = clamp(rssi, settings.rssi_min, settings.rssi_max)
@@ -370,36 +372,106 @@ local function drawFlightlog(x, y, event)
   if event == EVT_ENTER_BREAK then
     flightlog.selected = not flightlog.selected
   end
-  if up and flightlog.cursor>0 and not flightlog.selected then
+  if up and flightlog.cursor>0 then
     flightlog.cursor = flightlog.cursor - 1
   end
-  if down and flightlog.cursor<flightlog.flight_count-1 and not flightlog.selected then
+  if down and flightlog.cursor<flightlog.count-1 then
     flightlog.cursor = flightlog.cursor + 1
   end
-  flightlog.scroll_offset = clamp(flightlog.scroll_offset, flightlog.cursor-7, flightlog.cursor)
-  lcd.drawText(x, y, string.format("Flight Log %i Entries", flightlog.flight_count), SMLSIZE+INVERS)
-  for i=0,flightlog.flight_count-1 do
-    local v=flightlog.flights[i]
-    if i>=flightlog.scroll_offset and i<flightlog.scroll_offset+8 then
-      local text=string.format("%s: %s %.1fv-%.1fv %.0f-%.0fdB %.0fmah", i, v.duration, v.min_batt, v.max_batt, v.min_rssi, v.max_rssi, v.batt_mah_used)
-      if i==flightlog.cursor and flightlog.selected then
-        lcd.drawText(x, y + (i-flightlog.scroll_offset+1)*7, text, SMLSIZE+BLINK+INVERS)
-      elseif i==flightlog.cursor then
-        lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE+INVERS)
-      else
-        lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE)
+  if flightlog.selected then
+    local text
+    local v=flightlog.flights[flightlog.cursor]
+    local margin=2
+    lcd.drawText(x, y, string.format("Flight Log Entry %i of %i", flightlog.cursor+1, flightlog.count), SMLSIZE+INVERS)
+    text=string.format("%s-%s-%s %s:%s:%s", v.start_date.year, v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.start_date.sec)
+    lcd.drawText(x, y+margin+1*7, text, SMLSIZE)
+    text=string.format("Flight Duration: %ss", v.duration)
+    lcd.drawText(x, y+margin+2*7, text, SMLSIZE)
+    text=string.format("Batt: %.1fv to %.1fv", v.min_batt, v.max_batt)
+    lcd.drawText(x, y+margin+3*7, text, SMLSIZE)
+    text=string.format("Batt Used: %.0fmah", v.batt_mah_used)
+    lcd.drawText(x, y+margin+4*7, text, SMLSIZE)
+    text=string.format("RSSI: %.1fdB to %.1fdB", v.min_rssi, v.max_rssi)
+    lcd.drawText(x, y+margin+5*7, text, SMLSIZE)
+    text=string.format("Throt: %.1f to %.1f", v.min_throt, v.max_throt)
+    lcd.drawText(x, y+margin+6*7, text, SMLSIZE)
+    text=string.format("Throt Avg: %.2f", v.throt_accum)
+    lcd.drawText(x, y+margin+7*7, text, SMLSIZE)
+    text=string.format("Tx Timestamp %s-%s", v.start_time, v.end_time)
+  else
+    flightlog.scroll_offset = clamp(flightlog.scroll_offset, flightlog.cursor-7, flightlog.cursor)
+    lcd.drawText(x, y, string.format("Flight Log (%i flights)", flightlog.count), SMLSIZE)
+    for i=0,flightlog.count-1 do
+      local v=flightlog.flights[i]
+      if i>=flightlog.scroll_offset and i<flightlog.scroll_offset+8 then
+        local text=string.format("%s/%s %s:%s %us %.1fv-%.1fv %udB", v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.duration, v.min_batt, v.max_batt, v.min_rssi)
+        if i==flightlog.cursor and flightlog.selected then
+          lcd.drawText(x, y + (i-flightlog.scroll_offset+1)*7, text, SMLSIZE+BLINK+INVERS)
+        elseif i==flightlog.cursor then
+          lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE+INVERS)
+        else
+          lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE)
+        end
       end
     end
   end
 end
 
+local function parseFlightData(line)
+    -- Pattern designed for flexibility with optional sign and decimal parts in numbers
+    local pattern = "(%d+)%-(%d+)%-(%d+)T(%d+):(%d+):(%d+) (%d+) ([%-%d%.]*)s ([%-%d%.]*)v%-([%-%d%.]*)v ([%-%d]*)%-([%-%d]*)dB ([%-%d]*)mah ([%-%d%.]*)throt ([%-%d%.]*)th%-([%-%d%.]*)th"
+    local year, mon, day, hour, min, sec, startTime, duration, minBatt, maxBatt, minRssi, maxRssi, battMahUsed, throtAccum, minThrot, maxThrot = string.match(line, pattern)
+    return {
+        start_date = { year = tonumber(year), mon = tonumber(mon), day = tonumber(day), hour = tonumber(hour), min = tonumber(min), sec = tonumber(sec) },
+        start_time = tonumber(startTime),
+        duration = tonumber(duration),
+        min_batt = tonumber(minBatt),
+        max_batt = tonumber(maxBatt),
+        min_rssi = tonumber(minRssi),
+        max_rssi = tonumber(maxRssi),
+        batt_mah_used = tonumber(battMahUsed),
+        throt_accum = tonumber(throtAccum),
+        min_throt = tonumber(minThrot),
+        max_throt = tonumber(maxThrot),
+    }
+end
+
+local function loadFlightLog()
+  local filepath = string.format(FLIGHTLOG_FILE_TEMPLATE, model.getInfo().name)
+  local file = io.open(filepath, "r")
+  local flights = {}
+  local flight_count = 0
+  local line = ""
+  if not file then
+    print("Cannot open flight log file for reading")
+    return {}
+  end
+  while true do
+    local chunk = io.read(file, 1024)
+    if not chunk or chunk == "" then break end
+    for i = 1, #chunk do
+      local c = string.sub(chunk, i, i)
+      if c == "\n" or c == "\r" then
+        flight = parseFlightData(line)
+        flights[flight_count]=flight
+        flight_count = flight_count + 1
+        line = ""
+      else
+        line = line .. c
+      end
+    end
+  end
+  return flights
+end
+
 local function initFlightlog()
   flightlog.flight_in_progress = false
-  flightlog.flight_count=0
   flightlog.cursor=0
   flightlog.scroll_offset=0
   flightlog.selected=false
-  flightlog.flights = {}
+  flightlog.flights = loadFlightLog()
+  flightlog.count = #flightlog.flights
+  print("Count: " .. flightlog.count)
 end
 
 local function updateFlightlog()
@@ -407,42 +479,49 @@ local function updateFlightlog()
   local batt = getValue(settings.batt_source)
   local batt_mah_used = getValue('Capa') or 0
   local armed = getValue(settings.armed_sw) > 10
-  --rssi=armed and 40 or nil
-  --batt=armed and 4.2 or nil
+  rssi=armed and 40 or nil
+  batt=armed and 4.2 or nil
   local throt = getValue('ch3')  
   local time = getTime() -- Number of 10ms ticks since radio started
-  local fc=flightlog.flight_count
+  local fc=flightlog.count
   if flightlog.flight_in_progress then
-    if batt==nil and rssi==nil and not armed then
+    if (batt==nil or batt==0) and (rssi==nil or rssi==0) and not armed then
         flightlog.flight_in_progress=false
         flightlog.flights[fc].end_time=time
         flightlog.flights[fc].duration=(time-flightlog.flights[fc].start_time)*.01
         flightlog.flights[fc].throt_accum = flightlog.flights[fc].throt_accum / flightlog.flights[fc].duration
-        flightlog.flight_count=flightlog.flight_count+1
-        print("increment flight count " .. flightlog.flight_count)
+        flightlog.count = flightlog.count + 1
+        print("increment flight count " .. #flightlog.flights)
         playFile("disarm.wav")
         local file = io.open(string.format(FLIGHTLOG_FILE_TEMPLATE, model.getInfo().name), "a")
         if file then
           local v=flightlog.flights[fc]
-          local serialized=string.format("%s to %s %ss %.1fv-%.1fv %.0f-%.0fdB %.0fmah %.1fthrot %.1fth-%.1fth\n", v.start_time, v.end_time, v.duration, v.min_batt, v.max_batt, v.min_rssi, v.max_rssi, v.batt_mah_used, v.throt_accum, v.min_throt, v.max_throt)
+          local serialized=string.format("%s-%s-%sT%s:%s:%s %s %ss %.1fv-%.1fv %.0f-%.0fdB %.0fmah %.1fthrot %.1fth-%.1fth\n",
+                                         v.start_date.year, v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.start_date.sec,
+                                         v.start_time, v.duration, v.min_batt, v.max_batt, v.min_rssi, v.max_rssi, v.batt_mah_used, v.throt_accum, v.min_throt, v.max_throt)
           io.write(file, serialized)
           io.close(file)
         end
         return
     end
-    if batt~=nil and rssi~=nil then
-      print("attempting access of " .. fc)
+    if rssi~=nil then
       flightlog.flights[fc].min_rssi = math.min(flightlog.flights[fc].min_rssi, rssi)
       flightlog.flights[fc].max_rssi = math.max(flightlog.flights[fc].max_rssi, rssi)
+    end
+    if batt~=nil then
       flightlog.flights[fc].min_batt = math.min(flightlog.flights[fc].min_batt, batt)
       flightlog.flights[fc].max_batt = math.max(flightlog.flights[fc].max_batt, batt)
+    end
+    if throt~=nil then
       flightlog.flights[fc].min_throt = math.min(flightlog.flights[fc].min_throt, throt)
       flightlog.flights[fc].max_throt = math.max(flightlog.flights[fc].max_throt, throt)
-      flightlog.flights[fc].batt_mah_used=math.max(flightlog.flights[fc].batt_mah_used, batt_mah_used)
       flightlog.flights[fc].throt_accum = flightlog.flights[fc].throt_accum + (throt+1024)/2048
     end
+    if batt_mah_used~=nil then
+      flightlog.flights[fc].batt_mah_used=math.max(flightlog.flights[fc].batt_mah_used, batt_mah_used)
+    end
   else
-    if armed and batt>3.8 and rssi~=nil then
+    if armed and batt>=3.5 and rssi~=nil then
       flightlog.flight_in_progress=true
       flightlog.flights[fc]={}
       flightlog.flights[fc].min_rssi=rssi
@@ -454,6 +533,7 @@ local function updateFlightlog()
       flightlog.flights[fc].throt_accum=0
       flightlog.flights[fc].batt_mah_used=0
       flightlog.flights[fc].start_time=time
+      flightlog.flights[fc].start_date=getDateTime()
       flightlog.flights[fc].duration=-1
       print("start flight for " .. fc)
       playFile("armed.wav")
