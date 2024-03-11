@@ -25,8 +25,10 @@ local cell_height = round(grid_height / 3)
 
 local batt_graph = {}
 local rssi_graph = {}
+local flightlog = {}
 local min_seen_rssi, min_seen_batt, max_seen_batt
 local SETTINGS_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/telem_settings_%s.txt"
+local FLIGHTLOG_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/flightlog_%s.txt"
 local switches = {'sa','sb','sc','sd','se','sf','s1','s2','s3','s4','ls','rs','ls1','ls2','ls3','ls4','ls5','ls6','ls7','ls8','ls9','l10'}
 local telemetries = {'RSSI', 'A1', 'A2', 'TPWR', 'TRSS', 'TQly', '1RSS', 'RxBt', 'Bat_', 'telem1','telem2','telem3','telem4','telem5','telem6','telem7','telem8','telem9','telem10','telem11','telem12','telem13','telem14','telem15','telem16','telem17','telem18','telem19','telem20','telem21','telem22','telem23','telem24','telem25','telem26','telem27','telem28','telem29','telem30'}
 local settings = {
@@ -49,12 +51,12 @@ local settings = {
 local sorted_settings={}
 local settings_count=nil
 local settings_screen = false
+local flightlog_screen = false
 local selected = false
 local settings_cursor=0
-local scroll_offset=0
+local settings_scroll_offset=0
 
-
-function init_graph(graph, min, max, width, height, interval)
+function initGraph(graph, min, max, width, height, interval)
   graph['min'] = min
   graph['max'] = max
   graph['width'] = width
@@ -324,13 +326,12 @@ local function drawSettings(x, y, event)
   if down and settings_cursor<settings_count-1 and not selected then
     settings_cursor = settings_cursor + 1
   end
-  scroll_offset = clamp(scroll_offset, settings_cursor-8, settings_cursor)
-  --local scroll_offset = math.max(settings_cursor-8,0)
+  settings_scroll_offset = clamp(settings_scroll_offset, settings_cursor-8, settings_cursor)
   for _, k in pairs(sorted_settings) do
     v=settings[k]
-    if i>=scroll_offset and i<scroll_offset+9 then
+    if i>=settings_scroll_offset and i<settings_scroll_offset+9 then
       if i==settings_cursor and selected then
-        lcd.drawText(x, y + (i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
+        lcd.drawText(x, y + (i-settings_scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+BLINK+INVERS)
         if type(v)=="number" and string.match(k, "batt_m")  then
           settings[k]=up and settings[k] + .05 or settings[k]
           settings[k]=down and settings[k] - .05 or settings[k]
@@ -345,12 +346,118 @@ local function drawSettings(x, y, event)
           settings[k]=down and telemetries[(getArrIndex(telemetries, settings[k]) - 1) % #telemetries] or settings[k]
         end
       elseif i==settings_cursor then
-        lcd.drawText(x, y+(i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+INVERS)
+        lcd.drawText(x, y+(i-settings_scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE+INVERS)
       else
-        lcd.drawText(x, y+(i-scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE)
+        lcd.drawText(x, y+(i-settings_scroll_offset)*7, string.format("%s: %s", k, v), SMLSIZE)
       end
     end
     i=i+1
+  end
+end
+
+local function drawFlightlog(x, y, event)
+  local i=0
+  local up = (event == EVT_UP_FIRST or event == EVT_UP_REPT)
+  local down = (event == EVT_DOWN_FIRST or event == EVT_DOWN_REPT)
+  if event == EVT_EXIT_BREAK then
+    if flightlog.selected then
+      flightlog.selected=false
+    else
+      flightlog_screen=false
+      return
+    end
+  end
+  if event == EVT_ENTER_BREAK then
+    flightlog.selected = not flightlog.selected
+  end
+  if up and flightlog.cursor>0 and not flightlog.selected then
+    flightlog.cursor = flightlog.cursor - 1
+  end
+  if down and flightlog.cursor<flightlog.flight_count-1 and not flightlog.selected then
+    flightlog.cursor = flightlog.cursor + 1
+  end
+  flightlog.scroll_offset = clamp(flightlog.scroll_offset, flightlog.cursor-7, flightlog.cursor)
+  lcd.drawText(x, y, string.format("Flight Log %i Entries", flightlog.flight_count), SMLSIZE+INVERS)
+  for i=0,flightlog.flight_count-1 do
+    local v=flightlog.flights[i]
+    if i>=flightlog.scroll_offset and i<flightlog.scroll_offset+8 then
+      local text=string.format("%s: %s %.1fv-%.1fv %.0f-%.0fdB %.0fmah", i, v.duration, v.min_batt, v.max_batt, v.min_rssi, v.max_rssi, v.batt_mah_used)
+      if i==flightlog.cursor and flightlog.selected then
+        lcd.drawText(x, y + (i-flightlog.scroll_offset+1)*7, text, SMLSIZE+BLINK+INVERS)
+      elseif i==flightlog.cursor then
+        lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE+INVERS)
+      else
+        lcd.drawText(x, y+(i-flightlog.scroll_offset+1)*7, text, SMLSIZE)
+      end
+    end
+  end
+end
+
+local function initFlightlog()
+  flightlog.flight_in_progress = false
+  flightlog.flight_count=0
+  flightlog.cursor=0
+  flightlog.scroll_offset=0
+  flightlog.selected=false
+  flightlog.flights = {}
+end
+
+local function updateFlightlog()
+  local rssi = getValue(settings.rssi_source)
+  local batt = getValue(settings.batt_source)
+  local batt_mah_used = getValue('Capa') or 0
+  local armed = getValue(settings.armed_sw) > 10
+  --rssi=armed and 40 or nil
+  --batt=armed and 4.2 or nil
+  local throt = getValue('ch3')  
+  local time = getTime() -- Number of 10ms ticks since radio started
+  local fc=flightlog.flight_count
+  if flightlog.flight_in_progress then
+    if batt==nil and rssi==nil and not armed then
+        flightlog.flight_in_progress=false
+        flightlog.flights[fc].end_time=time
+        flightlog.flights[fc].duration=(time-flightlog.flights[fc].start_time)*.01
+        flightlog.flights[fc].throt_accum = flightlog.flights[fc].throt_accum / flightlog.flights[fc].duration
+        flightlog.flight_count=flightlog.flight_count+1
+        print("increment flight count " .. flightlog.flight_count)
+        playFile("disarm.wav")
+        local file = io.open(string.format(FLIGHTLOG_FILE_TEMPLATE, model.getInfo().name), "a")
+        if file then
+          local v=flightlog.flights[fc]
+          local serialized=string.format("%s to %s %ss %.1fv-%.1fv %.0f-%.0fdB %.0fmah %.1fthrot %.1fth-%.1fth\n", v.start_time, v.end_time, v.duration, v.min_batt, v.max_batt, v.min_rssi, v.max_rssi, v.batt_mah_used, v.throt_accum, v.min_throt, v.max_throt)
+          io.write(file, serialized)
+          io.close(file)
+        end
+        return
+    end
+    if batt~=nil and rssi~=nil then
+      print("attempting access of " .. fc)
+      flightlog.flights[fc].min_rssi = math.min(flightlog.flights[fc].min_rssi, rssi)
+      flightlog.flights[fc].max_rssi = math.max(flightlog.flights[fc].max_rssi, rssi)
+      flightlog.flights[fc].min_batt = math.min(flightlog.flights[fc].min_batt, batt)
+      flightlog.flights[fc].max_batt = math.max(flightlog.flights[fc].max_batt, batt)
+      flightlog.flights[fc].min_throt = math.min(flightlog.flights[fc].min_throt, throt)
+      flightlog.flights[fc].max_throt = math.max(flightlog.flights[fc].max_throt, throt)
+      flightlog.flights[fc].batt_mah_used=math.max(flightlog.flights[fc].batt_mah_used, batt_mah_used)
+      flightlog.flights[fc].throt_accum = flightlog.flights[fc].throt_accum + (throt+1024)/2048
+    end
+  else
+    if armed and batt>3.8 and rssi~=nil then
+      flightlog.flight_in_progress=true
+      flightlog.flights[fc]={}
+      flightlog.flights[fc].min_rssi=rssi
+      flightlog.flights[fc].max_rssi=rssi
+      flightlog.flights[fc].min_batt=batt
+      flightlog.flights[fc].max_batt=batt
+      flightlog.flights[fc].min_throt=throt
+      flightlog.flights[fc].max_throt=throt
+      flightlog.flights[fc].throt_accum=0
+      flightlog.flights[fc].batt_mah_used=0
+      flightlog.flights[fc].start_time=time
+      flightlog.flights[fc].duration=-1
+      print("start flight for " .. fc)
+      playFile("armed.wav")
+    end
   end
 end
 
@@ -358,12 +465,19 @@ end
 -- Main Event Loop
 local function run(event)
   lcd.clear()
+  updateFlightlog()
   if event == EVT_UP_LONG and not settings_screen then
     settings_screen = true
+  end
+  if event == EVT_DOWN_LONG and not flightlog_screen then
+    flightlog_screen = true
   end
 
   if settings_screen then
     drawSettings(1, 1, event)
+    return
+  elseif flightlog_screen then
+    drawFlightlog(1, 1, event)
     return
   end
 
@@ -399,8 +513,9 @@ end
 
 local function init_func()
   loadSettingsFromFile()
-  init_graph(batt_graph, settings.batt_min, settings.batt_max, grid_width/2, cell_height-1, 5)
-  init_graph(rssi_graph, settings.rssi_min, settings.rssi_max, grid_width/2, cell_height-1, 5)
+  initGraph(batt_graph, settings.batt_min, settings.batt_max, grid_width/2, cell_height-1, 5)
+  initGraph(rssi_graph, settings.rssi_min, settings.rssi_max, grid_width/2, cell_height-1, 5)
+  initFlightlog()
 end
 
 return{run=run, init=init_func}
