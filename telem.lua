@@ -29,7 +29,7 @@ local flightlog = {}
 local min_seen_rssi, min_seen_batt, max_seen_batt
 local SETTINGS_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/telem_settings_%s.txt"
 local FLIGHTLOG_FILE_TEMPLATE = "/SCRIPTS/TELEMETRY/flightlog_%s.txt"
-local FLIGHTLOG_RECORD_LENGTH = 51
+local FLIGHTLOG_RECORD_LENGTH = 52
 local switches = {'sa','sb','sc','sd','se','sf','s1','s2','s3','s4','ls','rs','ls1','ls2','ls3','ls4','ls5','ls6','ls7','ls8','ls9','l10'}
 local telemetries = {'RSSI', 'A1', 'A2', 'TPWR', 'TRSS', 'TQly', '1RSS', 'RxBt', 'Bat_', 'telem1','telem2','telem3','telem4','telem5','telem6','telem7','telem8','telem9','telem10','telem11','telem12','telem13','telem14','telem15','telem16','telem17','telem18','telem19','telem20','telem21','telem22','telem23','telem24','telem25','telem26','telem27','telem28','telem29','telem30'}
 local settings = {
@@ -397,14 +397,15 @@ local function drawFlightlog(x, y, event)
     lcd.drawText(x, y+margin+3*7, text, SMLSIZE)
     text=string.format("Batt Used: %.0fmah", v.batt_mah_used)
     lcd.drawText(x, y+margin+4*7, text, SMLSIZE)
-    text=string.format("Min RSSI: %.1fdB", v.min_rssi)
+    text=string.format("Min RSSI: %-.1fdB", v.min_rssi)
     lcd.drawText(x, y+margin+5*7, text, SMLSIZE)
-    text=string.format("Throt Avg: %.2f", v.throt_accum)
+    text=string.format("Throt Avg: %i%%", v.throt_accum)
+    lcd.drawText(x, y+margin+6*7, text, SMLSIZE)
   else
     lcd.drawText(x, y, string.format("Flight Log (%i flights)", flightlog.totalRecords), SMLSIZE)
     for i=0,math.min(flightlog.totalRecords-1,7) do
       local v=flightlog.records[i]
-      local text=string.format("%u/%02u %02u:%02u %u:%02u %.1f-%.1fv %udB", v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.duration/60, v.duration%60, v.min_batt, v.max_batt, v.min_rssi)
+      local text=string.format("%u/%02u %02u:%02u %u:%02u %.1f-%.1fv %idB", v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.duration/60, v.duration%60, v.min_batt, v.max_batt, v.min_rssi)
       if i==flightlog.cursor-flightlog.scroll_offset then
         lcd.drawText(x, y+(i+1)*7, text, SMLSIZE+INVERS)
       else
@@ -419,9 +420,9 @@ local function parseFlightData(line)
     local hour, min, sec = string.sub(line, 12, 13), string.sub(line, 15, 16), string.sub(line, 18, 19)
     local duration = string.sub(line, 21, 24)
     local min_batt, max_batt = string.sub(line, 26, 28), string.sub(line, 30, 32)
-    local min_rssi = string.sub(line, 35, 37)
-    local batt_mah_used = string.sub(line, 40, 43)
-    local throt_accum = string.sub(line, 48, 49)
+    local min_rssi = string.sub(line, 35, 38)
+    local batt_mah_used = string.sub(line, 41, 44)
+    local throt_accum = string.sub(line, 49, 50)
     return {
         start_date = { year = tonumber(year), mon = tonumber(mon), day = tonumber(day), hour = tonumber(hour), min = tonumber(min), sec = tonumber(sec) },
         duration = tonumber(duration),
@@ -505,8 +506,8 @@ local function updateFlightlog()
   local batt = getValue(settings.batt_source)
   local batt_mah_used = getValue('Capa') or 0
   local armed = getValue(settings.armed_sw) > 10
-  rssi=armed and 99 or nil
-  batt=armed and 4.4 or nil
+  --rssi=armed and -50 or nil
+  --batt=armed and 4.4 or nil
   local throt = getValue('ch3')  
   local time = getTime() -- Number of 10ms ticks since radio started
   local fc=flightlog.totalRecords
@@ -524,9 +525,9 @@ local function updateFlightlog()
 	    end
       local file = io.open(string.format(FLIGHTLOG_FILE_TEMPLATE, model.getInfo().name), "a")
       if file then
-        local serialized=string.format("%04d-%02d-%02dT%02d:%02d:%02d %04d %1.1f-%1.1fv %03.0fr %04dmah %02dt\n",
+        local serialized=string.format("%04d-%02d-%02dT%02d:%02d:%02d %04d %1.1f-%1.1fv %sr %04dmah %02dt\n",
                                        v.start_date.year, v.start_date.mon, v.start_date.day, v.start_date.hour, v.start_date.min, v.start_date.sec,
-                                       v.duration%10000, v.min_batt%10, v.max_batt%10, v.min_rssi%100, v.batt_mah_used%10000, v.throt_accum)
+                                       v.duration%10000, v.min_batt%10, v.max_batt%10,(v.min_rssi >= 0 and "+" or "-") .. string.format("%03u",math.abs(v.min_rssi)%1000), v.batt_mah_used%10000, v.throt_accum)
         io.write(file, serialized)
         io.close(file)
         if flightlog.cursor == flightlog.totalRecords - 1 then
